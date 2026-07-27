@@ -36,12 +36,7 @@ import java.awt.datatransfer.UnsupportedFlavorException;
 import java.io.IOException;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Iterator;
-import java.util.List;
-import java.util.NoSuchElementException;
-import java.util.Objects;
+import java.util.*;
 import java.util.function.Consumer;
 import java.util.function.IntPredicate;
 import java.util.stream.Collectors;
@@ -149,6 +144,7 @@ public class TabInterface
 	private final TagManager tagManager;
 	private final TabManager tabManager;
 	private final LayoutManager layoutManager;
+	private final PotionStorage potionStorage;
 	private final ChatboxPanelManager chatboxPanelManager;
 	private final BankTagsConfig config;
 	private final BankSearch bankSearch;
@@ -174,7 +170,7 @@ public class TabInterface
 	private Widget newTab;
 
 	@Inject
-	private TabInterface(
+	 TabInterface(
 		final Client client,
 		final ClientThread clientThread,
 		final BankTagsPlugin plugin,
@@ -182,6 +178,7 @@ public class TabInterface
 		final TagManager tagManager,
 		final TabManager tabManager,
 		final LayoutManager layoutManager,
+		final PotionStorage potionStorage,
 		final ChatboxPanelManager chatboxPanelManager,
 		final BankTagsConfig config,
 		final BankSearch bankSearch,
@@ -196,6 +193,7 @@ public class TabInterface
 		this.tagManager = tagManager;
 		this.tabManager = tabManager;
 		this.layoutManager = layoutManager;
+		this.potionStorage = potionStorage;
 		this.chatboxPanelManager = chatboxPanelManager;
 		this.config = config;
 		this.bankSearch = bankSearch;
@@ -272,6 +270,10 @@ public class TabInterface
 			{
 				Widget bankTitle = client.getWidget(InterfaceID.Bankmain.TITLE);
 				bankTitle.setText("Tag tab <col=ff0000>" + activeTag + "</col>");
+				if (activeLayout == null)
+				{
+					appendPotionStoreItems(activeTag);
+				}
 			}
 
 			// Recompute scroll size. Only required for tag tab tab since it doesn't show real items.
@@ -1402,5 +1404,94 @@ public class TabInterface
 			.type(ChatMessageType.CONSOLE)
 			.runeLiteFormattedMessage(message)
 			.build());
+	}
+
+
+	// Appends items from potion storage after the "real" bank items in a tag tab that has
+	// no layout enabled. Non-layout tag tabs filter real items via the game's own bank
+	// search (see openTag()/bankSearch.reset()), which knows nothing about potion storage,
+	// so this exists purely to bolt potion storage items on afterward.
+	void appendPotionStoreItems(String tag)
+	{
+		List<Integer> taggedItems = tagManager.getItemsForTag(tag);
+		if (taggedItems.isEmpty())
+		{
+			return;
+		}
+
+		Widget itemsContainer = client.getWidget(InterfaceID.Bankmain.ITEMS);
+		if (itemsContainer == null)
+		{
+			return;
+		}
+
+		Widget[] children = itemsContainer.getChildren();
+		if (children == null)
+		{
+			return;
+		}
+
+		// Count how many "real" item widgets the vanilla search left visible. Everything
+		// from tagTabFirstChildIdx onward belongs to RuneLite's own tag-tab menu widgets
+		// (see rebuildTagTabTab()), not real bank items, so it's excluded here.
+		int realItemLimit = tagTabFirstChildIdx == -1 ? children.length : tagTabFirstChildIdx;
+		int visibleRealItems = 0;
+		for (int i = 0; i < realItemLimit; ++i)
+		{
+			Widget c = children[i];
+			if (c != null && !c.isHidden() && c.getItemId() > 0)
+			{
+				++visibleRealItems;
+			}
+		}
+
+		int slot = visibleRealItems;
+		int childIdx = tagTabFirstChildIdx;
+
+		ItemContainer bank = client.getItemContainer(InventoryID.BANK);
+		Set<Integer> bankItemIds = new HashSet<>();
+		if (bank != null)
+		{
+			for (Item item : bank.getItems())
+			{
+				bankItemIds.add(item.getId());
+			}
+		}
+
+		for (int itemId : taggedItems)
+		{
+			int matchedItemId = potionStorage.matches(bankItemIds, itemId);
+			int resolvedItemId = matchedItemId != -1 ? matchedItemId : itemId;
+
+			int qty = potionStorage.count(resolvedItemId);
+			if (qty <= 0)
+			{
+				continue;
+			}
+
+			int row = slot / BANK_ITEMS_PER_ROW;
+			int col = slot % BANK_ITEMS_PER_ROW;
+			int itemX = BANK_ITEM_START_X + col * (BANK_ITEM_WIDTH + BANK_ITEM_X_PADDING);
+			int itemY = BANK_ITEM_START_Y + row * (BANK_ITEM_HEIGHT + BANK_ITEM_Y_PADDING);
+
+			Widget w = itemsContainer.getChild(childIdx++);
+			if (w == null)
+			{
+				w = itemsContainer.createChild(-1, WidgetType.GRAPHIC);
+				w.setOriginalWidth(BANK_ITEM_WIDTH);
+				w.setOriginalHeight(BANK_ITEM_HEIGHT);
+			}
+
+			w.setHidden(false);
+			w.setOriginalX(itemX);
+			w.setOriginalY(itemY);
+			w.setItemId(resolvedItemId);
+			w.setItemQuantity(qty);
+			w.setItemQuantityMode(ItemQuantityMode.ALWAYS);
+			w.setName(itemManager.getItemComposition(resolvedItemId).getName());
+			w.revalidate();
+
+			++slot;
+		}
 	}
 }
